@@ -965,6 +965,18 @@ impl EvaluationContext<'_> {
                     self.evaluate(expression2)
                 }
             }
+            ResolvedExpression::If {
+                condition,
+                consequent,
+                alternate,
+            } => {
+                let condition_set = self.evaluate(condition)?;
+                if condition_set.positions().attach(index).next().is_some() {
+                    self.evaluate(consequent)
+                } else {
+                    self.evaluate(alternate)
+                }
+            }
             ResolvedExpression::Union(expression1, expression2) => {
                 let set1 = self.evaluate(expression1)?;
                 let set2 = self.evaluate(expression2)?;

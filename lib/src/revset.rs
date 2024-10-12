@@ -268,6 +268,11 @@ pub enum RevsetExpression<St: ExpressionState> {
         visible_heads: Vec<CommitId>,
     },
     Coalesce(Rc<Self>, Rc<Self>),
+    If {
+        condition: Rc<Self>,
+        consequent: Rc<Self>,
+        alternate: Rc<Self>,
+    },
     Present(Rc<Self>),
     NotIn(Rc<Self>),
     Union(Rc<Self>, Rc<Self>),
@@ -620,6 +625,11 @@ pub enum ResolvedExpression {
         count: usize,
     },
     Coalesce(Box<Self>, Box<Self>),
+    If {
+        condition: Box<Self>,
+        consequent: Box<Self>,
+        alternate: Box<Self>,
+    },
     Union(Box<Self>, Box<Self>),
     /// Intersects `candidates` with `predicate` by filtering.
     FilterWithin {
@@ -942,6 +952,20 @@ static BUILTIN_FUNCTION_MAP: Lazy<HashMap<&'static str, RevsetFunction>> = Lazy:
             .map(|arg| lower_expression(diagnostics, arg, context))
             .try_collect()?;
         Ok(RevsetExpression::coalesce(&expressions))
+    });
+    map.insert("if_not_none", |diagnostics, function, context| {
+        let ([condition_arg, consequent_arg], [alternate_arg]) = function.expect_arguments()?;
+        let condition = lower_expression(diagnostics, condition_arg, context)?;
+        let consequent = lower_expression(diagnostics, consequent_arg, context)?;
+        let alternate = alternate_arg
+            .map(|alternate_arg| lower_expression(diagnostics, alternate_arg, context))
+            .transpose()?
+            .unwrap_or_else(RevsetExpression::none);
+        Ok(Rc::new(RevsetExpression::If {
+            condition,
+            consequent,
+            alternate,
+        }))
     });
     map
 });
@@ -1280,6 +1304,17 @@ fn try_transform_expression<St: ExpressionState, E>(
                 post,
             )?
             .map(|(expression1, expression2)| RevsetExpression::Coalesce(expression1, expression2)),
+            RevsetExpression::If {
+                condition,
+                consequent,
+                alternate,
+            } => transform_rec_triplet((condition, consequent, alternate), pre, post)?.map(
+                |(condition, consequent, alternate)| RevsetExpression::If {
+                    condition,
+                    consequent,
+                    alternate,
+                },
+            ),
             RevsetExpression::Present(candidates) => {
                 transform_rec(candidates, pre, post)?.map(RevsetExpression::Present)
             }
@@ -1307,6 +1342,37 @@ fn try_transform_expression<St: ExpressionState, E>(
             }
         }
         .map(Rc::new))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn transform_rec_triplet<St: ExpressionState, E>(
+        (expression1, expression2, expression3): (
+            &Rc<RevsetExpression<St>>,
+            &Rc<RevsetExpression<St>>,
+            &Rc<RevsetExpression<St>>,
+        ),
+        pre: &mut impl FnMut(&Rc<RevsetExpression<St>>) -> Result<TransformedExpression<St>, E>,
+        post: &mut impl FnMut(&Rc<RevsetExpression<St>>) -> Result<TransformedExpression<St>, E>,
+    ) -> Result<
+        Option<(
+            Rc<RevsetExpression<St>>,
+            Rc<RevsetExpression<St>>,
+            Rc<RevsetExpression<St>>,
+        )>,
+        E,
+    > {
+        match (
+            transform_rec(expression1, pre, post)?,
+            transform_rec(expression2, pre, post)?,
+            transform_rec(expression3, pre, post)?,
+        ) {
+            (None, None, None) => Ok(None),
+            (new_expression1, new_expression2, new_expression3) => Ok(Some((
+                new_expression1.unwrap_or_else(|| expression1.clone()),
+                new_expression2.unwrap_or_else(|| expression2.clone()),
+                new_expression3.unwrap_or_else(|| expression3.clone()),
+            ))),
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -1467,6 +1533,21 @@ where
             let expression1 = folder.fold_expression(expression1)?;
             let expression2 = folder.fold_expression(expression2)?;
             RevsetExpression::Coalesce(expression1, expression2).into()
+        }
+        RevsetExpression::If {
+            condition,
+            consequent,
+            alternate,
+        } => {
+            let condition = folder.fold_expression(condition)?;
+            let consequent = folder.fold_expression(consequent)?;
+            let alternate = folder.fold_expression(alternate)?;
+            RevsetExpression::If {
+                condition,
+                consequent,
+                alternate,
+            }
+            .into()
         }
         RevsetExpression::Present(candidates) => {
             let candidates = folder.fold_expression(candidates)?;
@@ -2353,6 +2434,15 @@ impl VisibilityResolutionContext<'_> {
                 self.resolve(expression1).into(),
                 self.resolve(expression2).into(),
             ),
+            RevsetExpression::If {
+                condition,
+                consequent,
+                alternate,
+            } => ResolvedExpression::If {
+                condition: self.resolve(condition).into(),
+                consequent: self.resolve(consequent).into(),
+                alternate: self.resolve(alternate).into(),
+            },
             // present(x) is noop if x doesn't contain any commit refs.
             RevsetExpression::Present(candidates) => self.resolve(candidates),
             RevsetExpression::NotIn(complement) => ResolvedExpression::Difference(
@@ -2443,6 +2533,9 @@ impl VisibilityResolutionContext<'_> {
                 ResolvedPredicateExpression::Set(self.resolve(expression).into())
             }
             RevsetExpression::Coalesce(_, _) => {
+                ResolvedPredicateExpression::Set(self.resolve(expression).into())
+            }
+            RevsetExpression::If { .. } => {
                 ResolvedPredicateExpression::Set(self.resolve(expression).into())
             }
             // present(x) is noop if x doesn't contain any commit refs.

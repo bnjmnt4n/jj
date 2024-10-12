@@ -28,6 +28,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [documentation](https://martinvonz.github.io/jj/latest/install-and-setup/#command-line-completion)
   to activate them.
 
+* New `if_not_none(condition, consequent[, alternate = none()])` revset can be
+  used to conditionally select revisions based on whether the condition revset
+  does not evaluate to `none()`.
+
 ### Fixed bugs
 
 ## [0.23.0] - 2024-11-06

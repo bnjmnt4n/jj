@@ -313,6 +313,11 @@ given [string pattern](#string-patterns).
   example, `at_operation(@-, visible_heads())` will return all heads which were
   visible at the previous operation.
 
+* `if_not_none(condition, consequent[, alternate = none()])`: Checks if the
+  `condition` revset does not evaluate to `none()`. If it does not evaluate to
+  `none()`, the `consequent` revset is returned; otherwise, the `alternate`
+  revset is returned. The `alternate` revset defaults to `none()`.
+
 [operation]: glossary.md#operation
 
 ??? examples
